@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import pickle
 from datetime import datetime
+import os
 
 # ✅ Load Pre-trained Model
 @st.cache_resource
@@ -33,14 +34,15 @@ def predict_aqi(comp_dict, hour, model):
 
 # ✅ Streamlit App UI
 st.title("🌐 Real-Time AQI Analyzer & 5-Hour Forecast")
-st.markdown("This app uses a pre-trained Random Forest model with OpenWeather API to predict AQI.")
+
 
 # ✅ Input Section
 lat = st.number_input("Enter Latitude:", value=12.9169)
 lon = st.number_input("Enter Longitude:", value=77.6247)
-api_key = st.text_input("Enter OpenWeather API Key:", type="password")
+
 
 if st.button("🔮 Predict AQI"):
+    api_key=os.getenv('api_key')
     if api_key:
         comp = get_pollutants(lat, lon, api_key)
         if comp:
