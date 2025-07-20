@@ -3,38 +3,46 @@ import pandas as pd
 import requests
 import pickle
 from datetime import datetime
-import matplotlib.pyplot as plt
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+import matplotlib.pyplot as plt
 
-# ✅ Load environment variables
+# ✅ Always at the top!
+st.set_page_config(page_title="Real-Time AQI Analyzer", page_icon="🌐", layout="centered")
+
+# ✅ Background CSS
+st.markdown("""
+    <style>
+    .stApp {
+        background-image: url('https://images.unsplash.com/photo-1506744038136-46273834b3fb');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ✅ Load .env locally (optional)
 load_dotenv()
-API_KEY = os.getenv('API_KEY')
 
-# ✅ Load Trained Model
+# ✅ Load Pre-trained Model
 @st.cache_resource
 def load_model():
     with open('aqi_rf_model.pkl', 'rb') as f:
-        model = pickle.load(f)
-    return model
+        return pickle.load(f)
 
 model = load_model()
 
-# ✅ Get Pollutants from OpenWeather
-def get_pollutants(lat, lon):
-    url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={API_KEY}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            return response.json()['list'][0]['components']
-        else:
-            st.error(f"❌ API Error! Status: {response.status_code}")
-            return None
-    except Exception as e:
-        st.error(f"❌ Connection Error: {e}")
+# ✅ Function to fetch pollutants from OpenWeather
+def get_pollutants(lat, lon, api_key):
+    url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()['list'][0]['components']
+    else:
         return None
 
-# ✅ Predict AQI using the model
+# ✅ Predict AQI for given pollutants & hour
 def predict_aqi(comp_dict, hour, model):
     features = [
         comp_dict['co'], comp_dict['no'], comp_dict['no2'], comp_dict['o3'],
@@ -42,41 +50,56 @@ def predict_aqi(comp_dict, hour, model):
     ]
     return model.predict([features])[0]
 
-# ✅ Streamlit UI
-st.title("🌐 Real-Time AQI Analyzer & 5-Hour Forecast (with Secure API Key)")
-
+# ✅ App Header
+st.title("🌐 Real-Time AQI Analyzer & 5-Hour Forecast")
+st.markdown("""
+            <div style='background-color: white; padding: 15px; border-radius: 10px;'>
+                <h3 style='color: black;'><b>🚀 Enter coordinates to fetch current AQI and predict next 5 hours.</b></h3>
+            </div>
+            """, unsafe_allow_html=True)
+# ✅ Input
 lat = st.number_input("📍 Enter Latitude:", value=12.9169, format="%.6f")
 lon = st.number_input("📍 Enter Longitude:", value=77.6247, format="%.6f")
 
-if st.button("🔮 Predict Current AQI & Forecast"):
-    if API_KEY:
-        comp = get_pollutants(lat, lon)
+# ✅ Fetch API Key
+api_key = os.getenv('api_key')
+if not api_key:
+    st.warning("⚠️ API Key not set in environment. Please check your .env file or Streamlit Secrets.")
+
+# ✅ On Button Click
+if st.button("🔮 Predict AQI"):
+    if api_key:
+        comp = get_pollutants(lat, lon, api_key)
         if comp:
             cur_hour = datetime.now().hour
+            forecast = []
+            for i in range(6):  # current + 5 hours
+                hour = (cur_hour + i) % 24
+                predicted_aqi = predict_aqi(comp, hour, model)
+                forecast.append({"Hour": hour, "Predicted AQI": predicted_aqi})
+            
+            df_forecast = pd.DataFrame(forecast)
+            st.markdown(f"""
+            <div style='background-color: white; padding: 15px; border-radius: 10px;'>
+            <h3><b>✅ Current AQI Category: {df_forecast.iloc[0]['Predicted AQI']}</b></h3>
+            </div>
+            """, unsafe_allow_html=True)
 
-            st.success(f"✅ AQI Prediction for Hour {cur_hour}:00")
-            current_aqi = predict_aqi(comp, cur_hour, model)
-            st.markdown(f"### 🌟 **Current AQI Category: {current_aqi}**")
 
-            st.subheader("📈 Forecast for Next 5 Hours")
-            forecast_data = []
-            for i in range(1, 6):
-                future_hour = (cur_hour + i) % 24
-                future_aqi = predict_aqi(comp, future_hour, model)
-                forecast_data.append({'Hour': f"+{i} (Hour {future_hour})", 'Predicted AQI': future_aqi})
+            st.subheader("📊 Forecast for Next 5 Hours")
+            st.dataframe(df_forecast)
 
-            forecast_df = pd.DataFrame(forecast_data)
-            st.table(forecast_df)
-
-            # ✅ Plotting the Forecast
+            # ✅ Line Chart
             fig, ax = plt.subplots()
-            ax.plot([f"+{i}" for i in range(1, 6)], forecast_df['Predicted AQI'], marker='o')
-            ax.set_xlabel('Next Hours')
+            ax.plot(df_forecast['Hour'], df_forecast['Predicted AQI'], marker='o', color='orange')
+            ax.set_title('AQI Forecast - Next 5 Hours')
+            ax.set_xlabel('Hour')
             ax.set_ylabel('Predicted AQI')
-            ax.set_title('AQI Forecast for Next 5 Hours')
             ax.grid(True)
             st.pyplot(fig)
+
         else:
-            st.warning("⚠️ Could not fetch pollutant data.")
+            st.error("❌ Failed to fetch API data. Please check your coordinates or API Key.")
     else:
-        st.warning("⚠️ API Key not set in environment. Please check your .env file.")
+        st.warning("⚠️ Please set your API Key in environment variables.")
+
