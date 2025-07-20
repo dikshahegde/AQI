@@ -7,10 +7,10 @@ import os
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 
-# ✅ Set Page Config — Keep this first!
+# ✅ Set page config at top
 st.set_page_config(page_title="Real-Time AQI Analyzer", page_icon="🌐", layout="centered")
 
-# ✅ Custom CSS for Background and White Overlay
+# ✅ Custom CSS
 st.markdown("""
     <style>
     .stApp {
@@ -31,7 +31,7 @@ st.markdown("""
 # ✅ Load Environment Variables
 load_dotenv()
 
-# ✅ Load Pre-trained Model
+# ✅ Load Model
 @st.cache_resource
 def load_model():
     with open('aqi_rf_model.pkl', 'rb') as f:
@@ -39,10 +39,10 @@ def load_model():
 
 model = load_model()
 
-# ✅ Get API Key from .env
+# ✅ Get API Key
 api_key = os.getenv('API_KEY')
 
-# ✅ Function to fetch pollutants from OpenWeather API
+# ✅ Fetch Pollutants
 def get_pollutants(lat, lon, api_key):
     url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
     response = requests.get(url)
@@ -51,7 +51,7 @@ def get_pollutants(lat, lon, api_key):
     else:
         return None
 
-# ✅ AQI Prediction Function
+# ✅ Predict AQI
 def predict_aqi(comp_dict, hour):
     features = [
         comp_dict['co'], comp_dict['no'], comp_dict['no2'], comp_dict['o3'],
@@ -59,50 +59,49 @@ def predict_aqi(comp_dict, hour):
     ]
     return model.predict([features])[0]
 
-# ✅ App Header Section
+# ✅ App Header
 st.markdown("""
     <div class="overlay">
-        <h1>🌐 Real-Time AQI Analyzer & 5-Hour Forecast</h1>
-        <h4>🚀 Enter coordinates to fetch current AQI and predict next 5 hours.</h4>
+        <h1>🌐 Real-Time AQI Analyzer & Next 5-Hour Forecast</h1>
+        <h4>🚀 Enter coordinates to fetch current pollutants and predict AQI for next 5 hours.</h4>
     </div>
 """, unsafe_allow_html=True)
 
-# ✅ User Input
+# ✅ Input Section
 lat = st.number_input("📍 Enter Latitude:", value=12.9169, format="%.6f")
 lon = st.number_input("📍 Enter Longitude:", value=77.6247, format="%.6f")
 
-# ✅ Prediction Button
-if st.button("🔮 Predict AQI"):
+# ✅ On Predict
+if st.button("🔮 Predict AQI for Next 5 Hours"):
     if api_key:
         pollutants = get_pollutants(lat, lon, api_key)
         if pollutants:
             current_hour = datetime.now().hour
             forecast = []
-            for i in range(6):  # Current hour + next 5 hours
+            for i in range(1, 6):  # Only next 5 hours (exclude current hour)
                 future_hour = (current_hour + i) % 24
                 predicted = predict_aqi(pollutants, future_hour)
                 forecast.append({"Hour": future_hour, "Predicted AQI": int(predicted)})
 
             df_forecast = pd.DataFrame(forecast)
 
-            st.markdown(f"""
+            st.markdown("""
                 <div class="overlay">
-                    <h3>✅ Current AQI Category: {df_forecast.iloc[0]['Predicted AQI']}</h3>
+                    <h3>✅ AQI Forecast for Next 5 Hours</h3>
                 </div>
             """, unsafe_allow_html=True)
 
-            st.subheader("📊 Forecast for Current + Next 5 Hours")
             st.dataframe(df_forecast, use_container_width=True)
 
-            # ✅ Forecast Chart
+            # ✅ Line Chart
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.plot(df_forecast['Hour'], df_forecast['Predicted AQI'], marker='o', color='#FF5733', linewidth=2)
-            ax.set_title('AQI Forecast', fontsize=14)
+            ax.set_title('Next 5 Hours AQI Forecast', fontsize=14)
             ax.set_xlabel('Hour of the Day', fontsize=12)
-            ax.set_ylabel('Predicted AQI Category', fontsize=12)
+            ax.set_ylabel('Predicted AQI', fontsize=12)
             ax.grid(True, linestyle='--', alpha=0.7)
             st.pyplot(fig)
         else:
-            st.error("❌ Failed to fetch API data. Please check your coordinates or API Key.")
+            st.error("❌ Failed to fetch pollutants. Check coordinates or API Key.")
     else:
-        st.warning("⚠️ API Key not set. Please check your .env file.")
+        st.warning("⚠️ API Key not set in environment variables. Please check your .env file.")
