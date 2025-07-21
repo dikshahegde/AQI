@@ -78,7 +78,7 @@ if st.button("🔮 Predict AQI for Next 5 Hours"):
         if pollutants:
             current_hour = datetime.now().hour
             forecast = []
-            for i in range(1, 6):  # Only next 5 hours (exclude current hour)
+            for i in range(1, 6):  
                 future_hour = (current_hour + i) % 24
                 predicted = predict_aqi(pollutants, future_hour)
                 forecast.append({"Hour": future_hour, "Predicted AQI": int(predicted)})
