@@ -6,6 +6,9 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
+from geopy.geocoders import Nominatim
+import folium
+from streamlit_folium import st_folium
 
 # ✅ Set page config at top
 st.set_page_config(page_title="Real-Time AQI Analyzer", page_icon="🌐", layout="centered")
@@ -41,6 +44,7 @@ model = load_model()
 
 # ✅ Get API Key
 api_key = os.getenv('API_KEY')
+google_api_key = os.getenv("GOOGLE_API_KEY")
 
 # ✅ Fetch Pollutants
 def get_pollutants(lat, lon, api_key):
@@ -59,17 +63,97 @@ def predict_aqi(comp_dict, hour):
     ]
     return model.predict([features])[0]
 
+
+def get_coordinates(location):
+    url = f"https://nominatim.openstreetmap.org/search?q={location}&format=json"
+    headers = {"User-Agent": "AQIApp/1.0"}
+    response = requests.get(url, headers=headers)
+    try:
+        res = response.json()
+        if res:
+            lat = float(res[0]["lat"])
+            lon = float(res[0]["lon"])
+            return lat, lon
+        else:
+            return None, None
+    except Exception as e:
+        st.error(f"Geocoding failed: {e}")
+        return None, None
+
+
+
+# Function to get nearby parks using Overpass API
+def get_nearby_parks(lat, lon):
+    try:
+        overpass_url = "http://overpass-api.de/api/interpreter"
+        overpass_query = f"""
+        [out:json];
+        (
+          node["leisure"="park"](around:3000,{lat},{lon});
+          way["leisure"="park"](around:3000,{lat},{lon});
+          relation["leisure"="park"](around:3000,{lat},{lon});
+        );
+        out center;
+        """
+        response = requests.post(overpass_url, data=overpass_query, headers={"User-Agent": "AQIApp/1.0"})
+        data = response.json()
+        parks = []
+
+        for element in data["elements"]:
+            name = element["tags"].get("name", "Unnamed Park")
+            if "lat" in element and "lon" in element:
+                lat, lon = element["lat"], element["lon"]
+            elif "center" in element:
+                lat, lon = element["center"]["lat"], element["center"]["lon"]
+            else:
+                continue
+            parks.append({"name": name, "lat": lat, "lon": lon})
+
+        return parks
+    except Exception as e:
+        st.error(f"Error fetching parks: {e}")
+        return []
+
+
+# Function to get AQI from OpenWeatherMap
+def get_aqi(lat, lon, api_key):
+    url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
+    res = requests.get(url).json()
+    try:
+        aqi = res["list"][0]["main"]["aqi"]
+        return aqi
+    except:
+        return None
+
+
+# Function to display parks with the best AQI
+def display_cleanest_parks(parks):
+    sorted_parks = sorted([p for p in parks if p["aqi"] is not None], key=lambda x: x["aqi"])
+    st.subheader("🌿 Cleanest Parks Nearby (Based on AQI)")
+    for park in sorted_parks[:5]:  # top 5 parks with lowest AQI
+        st.markdown(f"**{park['name']}** - AQI Level: {park['aqi']}  \nLocation: ({park['lat']:.4f}, {park['lon']:.4f})")
+
+
 # ✅ App Header
 st.markdown("""
     <div class="overlay">
-        <h1>🌐 Real-Time AQI Analyzer & Next 5-Hour Forecast</h1>
-        <h4>🚀 Enter coordinates to fetch current pollutants and predict AQI for next 5 hours.</h4>
+        <h1>🌐 Smart AQI Assistant</h1>
+        <h4>🚀 Enter your location (City, Area):.</h4>
     </div>
 """, unsafe_allow_html=True)
 
+
+city = st.text_input("Enter City:")
+area = st.text_input("Enter Area:")
+if city and area:
+    location_input = f"{area}, {city}"
+    geolocator = Nominatim(user_agent="geoapi")
+    location = geolocator.geocode(location_input, timeout=10)
+
+    if location:
+        lat, lon = location.latitude, location.longitude
+        st.success(f"📍 Location detected: {location.address}")
 # ✅ Input Section
-lat = st.number_input("📍 Enter Latitude:", value=12.9169, format="%.6f")
-lon = st.number_input("📍 Enter Longitude:", value=77.6247, format="%.6f")
 
 # ✅ On Predict
 if st.button("🔮 Predict AQI for Next 5 Hours"):
@@ -105,3 +189,22 @@ if st.button("🔮 Predict AQI for Next 5 Hours"):
             st.error("❌ Failed to fetch pollutants. Check coordinates or API Key.")
     else:
         st.warning("⚠️ API Key not set in environment variables. Please check your .env file.")
+
+location = st.text_input("Enter your Area or City (e.g., Jayanagar, Bangalore)")
+
+if st.button("🏞️ Find Cleanest Parks Nearby"):
+    if location.strip() == "":
+        st.warning("⚠️ Please enter a valid location.")
+    else:
+        with st.spinner("🔍 Fetching parks and air quality data..."):
+            lat, lon = get_coordinates(location)
+            if lat is None or lon is None:
+                st.error("❌ Failed to find location coordinates. Please check the area name.")
+            else:
+                parks = get_nearby_parks(lat, lon)
+                for park in parks:
+                    park["aqi"] = get_aqi(park["lat"], park["lon"], api_key)
+                if parks:
+                    display_cleanest_parks(parks)
+                else:
+                    st.info("ℹ️ No parks found nearby.")
