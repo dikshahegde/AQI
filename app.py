@@ -7,8 +7,7 @@ import os
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 from geopy.geocoders import Nominatim
-import folium
-from streamlit_folium import st_folium
+
 
 # ✅ Set page config at top
 st.set_page_config(page_title="Real-Time AQI Analyzer", page_icon="🌐", layout="centered")
