@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import pickle
 from datetime import datetime
+import pytz
 import os
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
@@ -159,7 +160,8 @@ if st.button("🔮 Predict AQI for Next 5 Hours"):
     if api_key:
         pollutants = get_pollutants(lat, lon, api_key)
         if pollutants:
-            current_hour = datetime.now().hour
+            local_tz = pytz.timezone('Asia/Kolkata')  # Change this to your timezone
+            current_hour = datetime.now(local_tz).hour
             forecast = []
             for i in range(1, 6):  
                 future_hour = (current_hour + i) % 24
