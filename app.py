@@ -5,12 +5,17 @@ import pickle
 from datetime import datetime
 import pytz
 import os
+import time
+import folium
+from folium import CircleMarker, PolyLine
+from streamlit_folium import st_folium
 from dotenv import load_dotenv
-import matplotlib.pyplot as plt
 from geopy.geocoders import Nominatim
+import openrouteservice
+import matplotlib.pyplot as plt
 
 
-# ✅ Set page config at top
+# ✅ Set page config
 st.set_page_config(page_title="Real-Time AQI Analyzer", page_icon="🌐", layout="centered")
 
 # ✅ Custom CSS
@@ -28,6 +33,9 @@ st.markdown("""
         border-radius: 10px;
         margin-bottom: 20px;
     }
+    label[for^="text_input"] {
+        display: none !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -42,11 +50,21 @@ def load_model():
 
 model = load_model()
 
-# ✅ Get API Key
-api_key = os.getenv('API_KEY')
-google_api_key = os.getenv("GOOGLE_API_KEY")
+# ✅ API Keys
+api_key = os.getenv('API_KEY')  # OpenWeatherMap
+ors_key = os.getenv("ORS_API_KEY")  # OpenRouteService
 
-# ✅ Fetch Pollutants
+@st.cache_data(ttl=3600)
+def geocode_location(location):
+    try:
+        geolocator = Nominatim(user_agent="AQIApp/1.0")
+        loc = geolocator.geocode(location, timeout=10)
+        if loc:
+            return loc.latitude, loc.longitude, loc.address
+    except:
+        return None, None, None
+    return None, None, None
+
 def get_pollutants(lat, lon, api_key):
     url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
     response = requests.get(url)
@@ -55,7 +73,6 @@ def get_pollutants(lat, lon, api_key):
     else:
         return None
 
-# ✅ Predict AQI
 def predict_aqi(comp_dict, hour):
     features = [
         comp_dict['co'], comp_dict['no'], comp_dict['no2'], comp_dict['o3'],
@@ -63,99 +80,92 @@ def predict_aqi(comp_dict, hour):
     ]
     return model.predict([features])[0]
 
-
-def get_coordinates(location):
-    url = f"https://nominatim.openstreetmap.org/search?q={location}&format=json"
-    headers = {"User-Agent": "AQIApp/1.0"}
-    response = requests.get(url, headers=headers)
-    try:
-        res = response.json()
-        if res:
-            lat = float(res[0]["lat"])
-            lon = float(res[0]["lon"])
-            return lat, lon
-        else:
-            return None, None
-    except Exception as e:
-        st.error(f"Geocoding failed: {e}")
-        return None, None
-
-
-
-# Function to get nearby parks using Overpass API
 def get_nearby_parks(lat, lon):
-    try:
-        overpass_url = "http://overpass-api.de/api/interpreter"
-        overpass_query = f"""
-        [out:json];
-        (
-          node["leisure"="park"](around:3000,{lat},{lon});
-          way["leisure"="park"](around:3000,{lat},{lon});
-          relation["leisure"="park"](around:3000,{lat},{lon});
-        );
-        out center;
-        """
-        response = requests.post(overpass_url, data=overpass_query, headers={"User-Agent": "AQIApp/1.0"})
-        data = response.json()
-        parks = []
+    overpass_url = "http://overpass-api.de/api/interpreter"
+    overpass_query = f"""
+    [out:json];
+    (
+      node["leisure"="park"](around:3000,{lat},{lon});
+      way["leisure"="park"](around:3000,{lat},{lon});
+      relation["leisure"="park"](around:3000,{lat},{lon});
+    );
+    out center;
+    """
+    response = requests.post(overpass_url, data=overpass_query, headers={"User-Agent": "AQIApp/1.0"})
+    data = response.json()
+    parks = []
+    for element in data["elements"]:
+        name = element["tags"].get("name", "Unnamed Park")
+        if "lat" in element and "lon" in element:
+            plat, plon = element["lat"], element["lon"]
+        elif "center" in element:
+            plat, plon = element["center"]["lat"], element["center"]["lon"]
+        else:
+            continue
+        parks.append({"name": name, "lat": plat, "lon": plon})
+    return parks
 
-        for element in data["elements"]:
-            name = element["tags"].get("name", "Unnamed Park")
-            if "lat" in element and "lon" in element:
-                lat, lon = element["lat"], element["lon"]
-            elif "center" in element:
-                lat, lon = element["center"]["lat"], element["center"]["lon"]
-            else:
-                continue
-            parks.append({"name": name, "lat": lat, "lon": lon})
-
-        return parks
-    except Exception as e:
-        st.error(f"Error fetching parks: {e}")
-        return []
-
-
-# Function to get AQI from OpenWeatherMap
 def get_aqi(lat, lon, api_key):
     url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
     res = requests.get(url).json()
     try:
-        aqi = res["list"][0]["main"]["aqi"]
-        return aqi
+        return res["list"][0]["main"]["aqi"]
     except:
         return None
 
+def aqi_to_color(aqi):
+    if aqi is None:
+        return "gray"
+    if aqi <= 2:
+        return "green"
+    elif aqi <= 4:
+        return "orange"
+    else:
+        return "red"
 
-# Function to display parks with the best AQI
-def display_cleanest_parks(parks):
-    sorted_parks = sorted([p for p in parks if p["aqi"] is not None], key=lambda x: x["aqi"])
-    st.subheader("🌿 Cleanest Parks Nearby (Based on AQI)")
-    for park in sorted_parks[:5]:  # top 5 parks with lowest AQI
-        st.markdown(f"**{park['name']}** - AQI Level: {park['aqi']}  \nLocation: ({park['lat']:.4f}, {park['lon']:.4f})")
+def get_routes_ors(start_coords, end_coords, ors_api_key):
+    client = openrouteservice.Client(key=ors_api_key)
+    try:
+        route = client.directions(
+            coordinates=[start_coords[::-1], end_coords[::-1]],
+            profile='driving-car',
+            format='geojson'
+        )
+        return [route['features'][0]]
+    except openrouteservice.exceptions.ApiError as e:
+        st.error(f"OpenRouteService Error: {e}")
+        return []
+
+def sample_route_coords(route_coords, step=10):
+    return route_coords[::step] if len(route_coords) > step else route_coords
+
+def compute_avg_aqi(coords, api_key):
+    total_aqi, count = 0, 0
+    for lat, lon in coords:
+        time.sleep(1)
+        aqi = get_aqi(lat, lon, api_key)
+        if aqi is not None:
+            total_aqi += aqi
+            count += 1
+    return total_aqi / count if count > 0 else None
 
 
-# ✅ App Header
+# ---------- UI Layout ----------
 st.markdown("""
     <div class="overlay">
         <h1>🌐 Smart AQI Assistant</h1>
-        <h4>🚀 Enter your location (City, Area):.</h4>
+        <h4>Predict AQI, find clean parks and safest routes visually 🌿</h4>
     </div>
 """, unsafe_allow_html=True)
 
+st.markdown('<div class="overlay">📍 Enter your Area / City</div>', unsafe_allow_html=True)
+location_input = st.text_input(label="")
+lat, lon, full_addr = geocode_location(location_input)
 
-city = st.text_input("Enter City:")
-area = st.text_input("Enter Area:")
-if city and area:
-    location_input = f"{area}, {city}"
-    geolocator = Nominatim(user_agent="geoapi")
-    location = geolocator.geocode(location_input, timeout=10)
+if lat and lon:
+    st.success(f"Detected: {full_addr}")
 
-    if location:
-        lat, lon = location.latitude, location.longitude
-        st.success(f"📍 Location detected: {location.address}")
-# ✅ Input Section
-
-# ✅ On Predict
+# ---------- AQI Forecast ----------
 if st.button("🔮 Predict AQI for Next 5 Hours"):
     if api_key:
         pollutants = get_pollutants(lat, lon, api_key)
@@ -191,21 +201,62 @@ if st.button("🔮 Predict AQI for Next 5 Hours"):
     else:
         st.warning("⚠️ API Key not set in environment variables. Please check your .env file.")
 
-location = st.text_input("Enter your Area or City (e.g., Jayanagar, Bangalore)")
-
+# ---------- Cleanest Parks ----------
 if st.button("🏞️ Find Cleanest Parks Nearby"):
-    if location.strip() == "":
-        st.warning("⚠️ Please enter a valid location.")
+    if not api_key:
+        st.warning("⚠️ OpenWeatherMap API_KEY missing")
+    elif lat and lon:
+        with st.spinner("Fetching parks and AQI data..."):
+            parks = get_nearby_parks(lat, lon)
+            for park in parks:
+                park["aqi"] = get_aqi(park["lat"], park["lon"], api_key)
+            cleanest = sorted([p for p in parks if p["aqi"] is not None], key=lambda x: x["aqi"])[:5]
+            st.subheader("🌿 Cleanest Parks")
+            for p in cleanest:
+                st.markdown(f"**{p['name']}** - AQI: {p['aqi']}")
+
+            fmap = folium.Map(location=[lat, lon], zoom_start=13)
+            folium.Marker([lat, lon], popup="Your Location", icon=folium.Icon(color="blue")).add_to(fmap)
+            for p in parks:
+                color = aqi_to_color(p["aqi"])
+                CircleMarker(location=[p["lat"], p["lon"]], radius=7,
+                             color=color, fill=True, popup=f"{p['name']} (AQI: {p['aqi']})").add_to(fmap)
+            st.subheader("🗺️ Nearby Parks Map")
+            st_folium(fmap, width=700, height=500)
     else:
-        with st.spinner("🔍 Fetching parks and air quality data..."):
-            lat, lon = get_coordinates(location)
-            if lat is None or lon is None:
-                st.error("❌ Failed to find location coordinates. Please check the area name.")
-            else:
-                parks = get_nearby_parks(lat, lon)
-                for park in parks:
-                    park["aqi"] = get_aqi(park["lat"], park["lon"], api_key)
-                if parks:
-                    display_cleanest_parks(parks)
+        st.error("❌ Invalid location")
+
+# ---------- Cleanest Route ----------
+st.markdown("### 🛣️ Cleanest Route Based on AQI")
+source = st.text_input("Source (e.g., MG Road, Bangalore)")
+destination = st.text_input("Destination (e.g., Indiranagar, Bangalore)")
+
+if st.button("🚦 Show Cleanest Route"):
+    if not api_key or not ors_key:
+        st.warning("⚠️ Set both API_KEY and ORS_API_KEY in .env")
+    else:
+        src_lat, src_lon, src_addr = geocode_location(source)
+        dst_lat, dst_lon, dst_addr = geocode_location(destination)
+        if None in (src_lat, src_lon, dst_lat, dst_lon):
+            st.error("❌ Could not geocode source/destination.")
+        else:
+            with st.spinner("Calculating cleanest route..."):
+                routes = get_routes_ors((src_lat, src_lon), (dst_lat, dst_lon), ors_key)
+                route_data = []
+                for route in routes:
+                    coords = [(lat, lon) for lon, lat in route['geometry']['coordinates']]
+                    sampled = sample_route_coords(coords)
+                    avg_aqi = compute_avg_aqi(sampled, api_key)
+                    if avg_aqi:
+                        distance = route['properties']['summary']['distance'] / 1000
+                        route_data.append((coords, avg_aqi, distance))
+                if route_data:
+                    clean = min(route_data, key=lambda x: x[1])
+                    st.success(f"Cleanest route found!\nDistance: {clean[2]:.2f} km\nAvg AQI: {clean[1]:.2f}")
+                    route_map = folium.Map(location=[(src_lat + dst_lat) / 2, (src_lon + dst_lon) / 2], zoom_start=13)
+                    PolyLine(clean[0], color="blue", weight=5).add_to(route_map)
+                    folium.Marker([src_lat, src_lon], popup="Start", icon=folium.Icon(color="green")).add_to(route_map)
+                    folium.Marker([dst_lat, dst_lon], popup="End", icon=folium.Icon(color="red")).add_to(route_map)
+                    st_folium(route_map, width=700, height=500)
                 else:
-                    st.info("ℹ️ No parks found nearby.")
+                    st.error("❌ Could not compute AQI for route.")
